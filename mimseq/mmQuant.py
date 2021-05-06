@@ -56,7 +56,15 @@ def unknownMods(inputs, knownTable, cluster_dict, modTable, misinc_thresh, cov_t
 				line = line.strip()
 				isodecoder, pos = line.split("\t")[0:2]
 				predRound1[isodecoder].append(int(pos))
-		knownTable = {cluster:[pos for pos in knownTable[cluster] if pos not in predRound1[cluster]] for cluster, pos in knownTable.items()} # subtraction
+		#KD expanded following line for clarity
+		#knownTable = {cluster:[pos for pos in knownTable[cluster] if pos not in predRound1[cluster]] for cluster, pos in knownTable.items()} # subtraction
+		knownTable_new = dict()
+		for cluster in knownTable.keys():
+			knownTable_new[cluster] = list()
+			for pos in knownTable[cluster]:
+				if pos not in predRound1[cluster]:
+					knownTable_new[cluster].append(pos)
+		knownTable = knownTable_new
 	except:
 		next
 
@@ -231,14 +239,18 @@ def bamMods_mp(out_dir, min_cov, info, mismatch_dict, insert_dict, del_dict, clu
 	# readthroughTable is similar to stops but normalised by coverage at each base
 	# This reflects the proportion of reads at a given site that stop at this site, as opposed to the proportion of all reads for the reference that stop here
 
-	modTable_prop = {isodecoder: {pos: {
-				group: count / (cov[isodecoder][pos]) if cov[isodecoder][pos] != 0 else 0
-				  for group, count in data.items() if group in ['A','C','G','T']
-								}
-			for pos, data in values.items()
-							}
-		for isodecoder, values in modTable.items()
-					}
+	#KD expanded this for clarity
+	modTable_prop = dict()
+	for isodecoder in modTable.keys():
+		modTable_prop[isodecoder] = dict()
+		for pos in modTable[isodecoder].keys():
+			modTable_prop[isodecoder][pos] = dict()
+			for group, count in modTable[isodecoder][pos].items():
+				if group in ['A','C','G','T']:
+					if cov[isodecoder][pos] != 0:
+						modTable_prop[isodecoder][pos][group] = count / cov[isodecoder][pos]
+					else:
+						modTable_prop[isodecoder][pos][group] = 0
 
 	stopTable_prop = {isodecoder: {
 			pos: (count / geneCov[isodecoder]) if geneCov[isodecoder] != 0 else 0

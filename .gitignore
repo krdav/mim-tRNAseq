@@ -2,3 +2,6 @@
 .Rhistory
 .RData
 .Ruserdata
+mimseq/__pycache__/*
+.DS_Store
+hg19_HEK239vsK562*
