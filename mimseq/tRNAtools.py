@@ -16,6 +16,7 @@ from collections import defaultdict
 import pandas as pd
 import requests
 from requests.models import HTTPError
+import json
 from .ssAlign import aligntRNA, extraCCA, tRNAclassifier, tRNAclassifier_nogaps, getAnticodon, clusterAnticodon
 
 log = logging.getLogger(__name__)
@@ -1052,3 +1053,235 @@ def tidyFiles (out_dir, cca):
 			shutil.move(full_file, out_dir + "cov")
 		if ("counts".upper() in file.upper()):
 			shutil.move(full_file, out_dir + "counts")
+
+class TRNA():
+    '''Object for tRNAs, their sequences, modifications and other information.'''
+    
+    def __init__(self, cmd_args):
+        self.inp_repo_path = cmd_args.repo_path
+        self.inp_gtRNAdb = cmd_args.trnas
+        self.inp_tRNAscan_out = cmd_args.trnaout
+        self.inp_mitotRNAs = cmd_args.mito
+        self.inp_ptm_off = cmd_args.posttrans
+        self.inp_double_cca = cmd_args.double_cca
+        self.inp_pretrnas = cmd_args.pretrnas
+        self.inp_local_mod = cmd_args.local_mod
+        
+        # Read intron boundaries into dict
+        self.intron_dict = self.read_introns(cmd_args.trnaout)
+        # Read tRNAs, minus introns, into dict
+        self.tRNA_dict = self.read_tRNAs(cmd_args.trnas, cmd_args.mito, cmd_args.posttrans, cmd_args.double_cca, cmd_args.pretrnas)
+        # Read table of tRNA modifications into dict
+        self.mod_dict = self.mod_parser(cmd_args.repo_path)
+        # Get species of input tRNA seqs to subset full Modomics table
+        self.species_set = {val['species'] for val in self.tRNA_dict.values()}
+        # Download and process Modomics data
+        self.modomics_dict = self.fetch_modomics(cmd_args.repo_path, cmd_args.local_mod)
+        
+
+    # Private methods for default dict.
+    # Used to create nested defaultdicts.
+    # Can be done with lambda functions (e.g. tRNA_dict = defaultdict(lambda: defaultdict()))
+    # But lambda functions cannot be pickled, and pickling is required for parallelization with multiprocessing.
+    def __dd(self):
+        return(defaultdict())
+    def __dd_list(self):
+        return(defaultdict(list))
+
+    def read_introns(self, trnaout_path):
+        '''Build dictionary of intron locations.'''
+        intron_dict = {}
+        with open(trnaout_path, 'r') as trnaout_file:
+            for line in trnaout_file:
+                cols = line.split()
+                if line.startswith("chr"):
+                    tRNA_ID = cols[0] + ".trna" + cols[1]
+                    tRNA_start = int(cols[2])
+                    intron_start = int(cols[6])
+                    intron_stop = int(cols[7])
+                    # If intron boundaries are not 0, i.e. there is an intron then add to dict
+                    if (intron_start > 0) & (intron_stop > 0):
+                        if tRNA_start > intron_start: # reverse strand
+                            intron_start = tRNA_start - intron_start
+                            intron_stop = tRNA_start - intron_stop + 1 # python 0 indexing
+                        else: # forward strand
+                            intron_start = intron_start - tRNA_start
+                            intron_stop = intron_stop - tRNA_start + 1 # python 0 indexing
+                        intron_dict[tRNA_ID] = {'intron_start': intron_start, 'intron_stop': intron_stop}
+
+            # log.info("{} introns registered...".format(len(intron_dict)))
+            print("{} introns registered...".format(len(intron_dict)))
+            return(intron_dict)
+
+    def read_tRNAs(self, trna_path, mitotrna_path, ptm_off, double_cca, pretrnas):
+        '''Read tRNA sequences from input files, remove introns and add CCA.'''
+        def remove_intron (intron_dict, seq_id, seq_obj, ptm_off, double_cca):
+            '''Use intron_dict to remove introns plus add CCA and 5' G for His (if eukaryotic).'''
+            # Find a match, slice intron and add G and CCA
+            ID = re.search("tRNAscan-SE ID: (.*?)\).|\((chr.*?)-", seq_obj.description).groups()
+            ID = list(filter(None, ID))[0]
+            if ID in intron_dict:
+                seq = str(seq_obj.seq[:intron_dict[ID]['intron_start']] + seq_obj.seq[intron_dict[ID]['intron_stop']:])
+            else:
+                seq = str(seq_obj.seq)
+            if not ptm_off:
+                if double_cca:
+                    seq = seq + 'CCACCA'
+                else:
+                    seq = seq + 'CCA'
+                if '-His-' in seq_id:
+                    seq = 'G' + seq
+            return(seq)
+
+        # Build dict of sequences from input tRNA fasta
+        # Start with cyto
+        tRNA_dict = defaultdict(self.__dd)
+        intron_count = 0
+        seq_set = set()
+        for seq_id, seq_obj in SeqIO.to_dict(SeqIO.parse(trna_path, "fasta")).items():
+            # Only add to dict if not undetermined sequence (Und)
+            # or nuclear-encoded mitochondrial tRNA (mnt)
+            if not (re.search('Und', seq_id) or re.search('nmt', seq_id)):
+                if not pretrnas:
+                    tRNAseq = remove_intron(self.intron_dict, seq_id, seq_obj, ptm_off, double_cca)
+                    intron_count += 1 if len(tRNAseq) < len(seq_obj.seq) else 0
+                else:
+                    tRNAseq = str(seq_obj.seq)
+                if tRNAseq not in seq_set: # Toss away duplicate tRNA sequences
+                    tRNA_dict[seq_id]['sequence'] = tRNAseq
+                    tRNA_dict[seq_id]['species'] = ' '.join(seq_id.split('_')[0:2])
+                    tRNA_dict[seq_id]['type'] = 'cyto'
+                    seq_set.add(tRNAseq)
+
+        # Then add mito (if given)
+        if mitotrna_path:
+            mito_count = defaultdict(int) # for unique tRNA naming
+            # Read each mito tRNA, edit sequence header to match nuclear genes as above and add to tRNA_dict
+            for seq_id, seq_obj in SeqIO.to_dict(SeqIO.parse(mitotrna_path, 'fasta')).items():
+                id_parts = seq_id.split("|")
+                anticodon = id_parts[4]
+                amino_acid = id_parts[3][0:3] # e.g. extract Leu from Leu1/Leu2
+                mito_count[anticodon] += 1
+                new_id = id_parts[1] + "_mito_tRNA-" + amino_acid + "-" + id_parts[4] + "-" + str(mito_count[anticodon]) + "-1"
+                if double_cca:
+                    tRNAseq = str(seq_obj.seq) + "CCACCA"
+                else:
+                    tRNAseq = str(seq_obj.seq) + "CCA"
+                if tRNAseq not in seq_set: # Toss away duplicate tRNA sequences
+                    tRNA_dict[new_id]['sequence'] = tRNAseq
+                    tRNA_dict[new_id]['type'] = 'mito'
+                    tRNA_dict[new_id]['species'] = ' '.join(id_parts[1].split('_')[0:2])
+                    seq_set.add(tRNAseq)
+
+            num_cyto = sum(1 for val in tRNA_dict.values() if val['type'] == 'cyto')
+            num_mito = sum(1 for val in tRNA_dict.values() if val['type'] == 'mito')
+            # log.info("Removed {} introns (including for duplicate tRNAs)".format(intron_count))
+            # log.info("{} cytosolic and {} mitochondrial tRNA sequences imported".format(num_cytosilic, num_mito))
+            print("Removed {} introns (including for duplicate tRNAs)".format(intron_count))
+            print("{} cytosolic and {} mitochondrial unique tRNA sequences imported".format(num_cyto, num_mito))
+            return(tRNA_dict)
+
+    def mod_parser(self, repo_path):
+        '''Parse tRNA and modifications.'''
+        mod_path = Path(repo_path + '/modifications.txt')
+        try:
+            _ = mod_path.resolve(strict=True)
+        except FileNotFoundError:
+            raise Exception('Expected modifications file but found none at this location: {}'.format(mod_path))
+        
+        # Read modifications and build dict
+        with open(mod_path, 'r', encoding='utf-8') as mod_file:
+            mod_dict = dict()
+            for line in mod_file:
+                if not line.startswith("#"):
+                    name, abbr, ref, mod = list(map(str.strip, line.split('\t')))
+                    # Replace unknown modifications with reference of N
+                    if not ref:
+                        ref = 'N'
+                    if mod:
+                        mod_dict[mod] = {'name':name, 'abbr':abbr, 'ref':ref}
+        return(mod_dict)
+
+    def fetch_modomics(self, repo_path, local_mod):
+        '''Download Modomics modified tRNA data (or use local version).'''
+        def unmodify_seq(seq, mod_dict):
+            '''Change modified bases into standard ACGT in input sequence.'''
+            new_seq = list()
+            for base in seq:
+                # For insertions ('_') make reference N - this is not described in the modifications table
+                if base == '_':
+                    unmod_base = 'N'
+                else:
+                    unmod_base = mod_dict[base]['ref']
+                    # Change queuosine to G (reference is preQ0base in modification file)
+                    if unmod_base == 'preQ0base':
+                        unmod_base = 'G'
+                new_seq.append(unmod_base)
+            return(''.join(new_seq).replace('U', 'T'))
+
+        #log.info("Downloading modomics database...")
+        print("Downloading modomics database...")
+        # Get full Modomics modified tRNA data from web
+        if not local_mod:
+            try:
+                response = requests.get("http://www.genesilico.pl/modomics/api/sequences?&RNAtype=tRNA")
+                response.raise_for_status()
+                modomics_json = response.json()
+                #log.info("Modomics retrieved...")
+                print("Modomics retrieved...")
+            except Exception as http_err:
+                #log.error("Failed to download Modomics database! Error: {}. Check status of Modomics webpage. Using local Modomics files...".format(http_err))
+                print("Failed to download Modomics database! Error: {}. Check status of Modomics webpage. Using local Modomics files...".format(http_err))
+                modomics_path = repo_path + '/data/modomics.json'
+                with open(modomics_path, encoding="utf-8") as mod_fh:
+                    modomics_json = json.load(mod_fh)
+            except Exception as err:
+                modomics_path = repo_path + '/data/modomics.json'
+                #log.error("Error in loading local Modomics files: {}".format(err))
+                print("Error in loading local Modomics files: {}".format(err))
+                raise Exception('Failed to open and read local Modomics JSON file: {}'.format(modomics_path))
+        else:
+            #log.warning("Retrieval of Modomics database disabled. Using local files instead...")
+            print("Retrieval of Modomics database disabled. Using local files instead...")
+            modomics_path = repo_path + '/data/modomics.json'
+            with open(modomics_path, encoding="utf-8") as mod_fh:
+                modomics_json = json.load(mod_fh)
+
+        # Build Modomics_dict from JSON data
+        modomics_dict = dict()
+        species_count = defaultdict(int)
+        log.info("Parsing Modomics JSON data...")
+        for entry in modomics_json.values():
+            mod_species = entry['organism']
+            if mod_species in self.species_set:
+                species_count[mod_species] += 1
+                anticodon = entry['anticodon']
+                new_anticodon = unmodify_seq(anticodon, self.mod_dict)
+                if "N" in new_anticodon:
+                    continue
+                # Check amino acid name in modomics - set to iMet if equal to Ini to match gtRNAdb
+                amino_acid = entry['subtype']
+                if amino_acid == 'Ini':
+                    amino_acid = 'iMet'
+
+                # Unique names for duplicates
+                curr_id = str(mod_species.replace(' ','_') + '_tRNA-' + amino_acid + '-' + new_anticodon)
+                duplicate_id = 0
+                while curr_id in modomics_dict and duplicate_id > 0:
+                    duplicate_id += 1
+                    curr_id = "-".join(curr_id.split('-')[0:3]) + '-' + str(duplicate_id)
+
+                tRNA_type = 'cyto' if 'cytosol' in entry['organellum'] else 'mito'
+                seq = entry['seq'].replace('U', 'T').replace('-', '')
+                unmod_seq = unmodify_seq(seq, self.mod_dict)
+                # Return list of modified nucl and inosines indices and add to modomics_dict
+                # add unmodified seq to modomics_dict by lookup to modifications
+                mods = list('''"KR'OYW⊆X*[''')
+                mod_idx = [i for i, base in enumerate(seq) if base in mods]
+                insosine_idx = [i for i, base in enumerate(seq) if base == 'I']
+                modomics_dict[curr_id] = {'seq':seq, 'type':tRNA_type, 'anticodon':new_anticodon, 'modified_idx':mod_idx, 'unmod_seq':unmod_seq, 'insosine_idx':insosine_idx}
+
+        for s in self.species_set:
+            #log.info('Number of Modomics entries for {}: {}'.format(s, species_count[s]))
+            print('Number of Modomics entries for {}: {}'.format(s, species_count[s]))
+        return(modomics_dict)
