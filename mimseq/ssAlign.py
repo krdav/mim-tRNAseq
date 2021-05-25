@@ -10,7 +10,24 @@ from operator import itemgetter
 
 stkname = ''
 
-def aligntRNA(tRNAseqs, out):
+def align_tRNA(seq_fnam, outdir, repo_path):
+    '''Run cmalign to generate Stockholm file for tRNA sequences.'''
+    stkname = seq_fnam.split(".fa")[0] + '_align.stk'
+    cmfile = repo_path + '/data/tRNAmatureseq.cm'
+    cmcommand = ['cmalign', '-o', stkname, '--nonbanded', '-g', cmfile, seq_fnam]
+    subprocess.check_call(cmcommand, stdout = open(outdir + '/cm.log', 'w'))
+    return(stkname)
+
+def wrong_cca(stkname):
+    '''Look for extra CCA's added spuriously that fall outside of canonical tRNA structure. Seems to be a problem in certain sequences in mouse - either an artifact from gtRNAdb or tRNAScan, or CCA is genomically encoded for these tRNAs?'''
+    wrong_seqs = list()
+    for record in AlignIO.read(stkname, "stockholm"):
+        if record.seq[-3:] == 'cca' and record.seq[-6:-3] == 'CCA': # lowercase here indicates alignment issue to other clusters
+            wrong_seqs.append(record.name)
+    os.remove(stkname)
+    return(wrong_seqs)
+
+def aligntRNA_old(tRNAseqs, out):
 # run cmalign to generate Stockholm file for tRNA sequences
 	global stkname
 	stkname = tRNAseqs.split(".fa")[0] + '_align.stk'
@@ -18,7 +35,7 @@ def aligntRNA(tRNAseqs, out):
 	cmcommand = ['cmalign', '-o', stkname, '--nonbanded', '-g', cmfile, tRNAseqs]
 	subprocess.check_call(cmcommand, stdout = open(out + 'cm.log', 'w'))
 
-def extraCCA():
+def extraCCA_old():
 	# look for extra CCA's added spuriously that fall outside of canonical tRNA structure
 	# Seems to be a problem in certain sequences in mouse - either an artifact from gtRNAdb or tRNAScan, or CCA is genomically encoded for these tRNAs?
 	extra_cca = list()

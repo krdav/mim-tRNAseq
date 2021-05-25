@@ -17,7 +17,7 @@ import pandas as pd
 import requests
 from requests.models import HTTPError
 import json
-from .ssAlign import aligntRNA, extraCCA, tRNAclassifier, tRNAclassifier_nogaps, getAnticodon, clusterAnticodon
+from .ssAlign import aligntRNA_old, extraCCA_old, tRNAclassifier, tRNAclassifier_nogaps, getAnticodon, clusterAnticodon, align_tRNA, wrong_cca
 
 log = logging.getLogger(__name__)
 
@@ -1054,7 +1054,7 @@ def tidyFiles (out_dir, cca):
 		if ("counts".upper() in file.upper()):
 			shutil.move(full_file, out_dir + "counts")
 
-class TRNA():
+class TRNA:
     '''Object for tRNAs, their sequences, modifications and other information.'''
     
     def __init__(self, cmd_args):
@@ -1066,6 +1066,7 @@ class TRNA():
         self.inp_double_cca = cmd_args.double_cca
         self.inp_pretrnas = cmd_args.pretrnas
         self.inp_local_mod = cmd_args.local_mod
+        self.inp_outdir = cmd_args.out
         
         # Read intron boundaries into dict
         self.intron_dict = self.read_introns(cmd_args.trnaout)
@@ -1077,7 +1078,20 @@ class TRNA():
         self.species_set = {val['species'] for val in self.tRNA_dict.values()}
         # Download and process Modomics data
         self.modomics_dict = self.fetch_modomics(cmd_args.repo_path, cmd_args.local_mod)
-        
+
+        # Remove extra 3' CCA if detected
+        with open(self.inp_outdir + '/tmpRNAseqs.fa', 'w') as fh_out:
+            for tRNA_id, tRNA in self.tRNA_dict.items():
+                print('>{}\n{}'.format(tRNA_id, tRNA['seq']), file=fh_out)
+        # Detect wrong CCA by alignment
+        stkname = align_tRNA(fh_out.name, self.inp_outdir, self.inp_repo_path)
+        wrong_seqs = wrong_cca(stkname)
+        # Clip the end of the wrong CCA sequences
+        for tRNA_id in wrong_seqs:
+            self.tRNA_dict[tRNA_id]['seq'] = self.tRNA_dict[tRNA_id]['seq'][:-3]
+        os.remove(fh_out.name)
+        log.info("Cliped extra CCA from {} sequences.".format(len(wrong_seqs)))
+        # print("Cliped extra CCA from {} sequences.".format(len(wrong_seqs)))
 
     # Private methods for default dict.
     # Used to create nested defaultdicts.
@@ -1109,8 +1123,8 @@ class TRNA():
                             intron_stop = intron_stop - tRNA_start + 1 # python 0 indexing
                         intron_dict[tRNA_ID] = {'intron_start': intron_start, 'intron_stop': intron_stop}
 
-            # log.info("{} introns registered...".format(len(intron_dict)))
-            print("{} introns registered...".format(len(intron_dict)))
+            log.info("{} introns registered...".format(len(intron_dict)))
+            # print("{} introns registered...".format(len(intron_dict)))
             return(intron_dict)
 
     def read_tRNAs(self, trna_path, mitotrna_path, ptm_off, double_cca, pretrnas):
@@ -1148,7 +1162,7 @@ class TRNA():
                 else:
                     tRNAseq = str(seq_obj.seq)
                 if tRNAseq not in seq_set: # Toss away duplicate tRNA sequences
-                    tRNA_dict[seq_id]['sequence'] = tRNAseq
+                    tRNA_dict[seq_id]['seq'] = tRNAseq
                     tRNA_dict[seq_id]['species'] = ' '.join(seq_id.split('_')[0:2])
                     tRNA_dict[seq_id]['type'] = 'cyto'
                     seq_set.add(tRNAseq)
@@ -1168,17 +1182,17 @@ class TRNA():
                 else:
                     tRNAseq = str(seq_obj.seq) + "CCA"
                 if tRNAseq not in seq_set: # Toss away duplicate tRNA sequences
-                    tRNA_dict[new_id]['sequence'] = tRNAseq
+                    tRNA_dict[new_id]['seq'] = tRNAseq
                     tRNA_dict[new_id]['type'] = 'mito'
                     tRNA_dict[new_id]['species'] = ' '.join(id_parts[1].split('_')[0:2])
                     seq_set.add(tRNAseq)
 
             num_cyto = sum(1 for val in tRNA_dict.values() if val['type'] == 'cyto')
             num_mito = sum(1 for val in tRNA_dict.values() if val['type'] == 'mito')
-            # log.info("Removed {} introns (including for duplicate tRNAs)".format(intron_count))
-            # log.info("{} cytosolic and {} mitochondrial tRNA sequences imported".format(num_cytosilic, num_mito))
-            print("Removed {} introns (including for duplicate tRNAs)".format(intron_count))
-            print("{} cytosolic and {} mitochondrial unique tRNA sequences imported".format(num_cyto, num_mito))
+            log.info("Removed {} introns (including for duplicate tRNAs)".format(intron_count))
+            log.info("{} cytosolic and {} mitochondrial tRNA sequences imported".format(num_cyto, num_mito))
+            # print("Removed {} introns (including for duplicate tRNAs)".format(intron_count))
+            # print("{} cytosolic and {} mitochondrial unique tRNA sequences imported".format(num_cyto, num_mito))
             return(tRNA_dict)
 
     def mod_parser(self, repo_path):
@@ -1219,30 +1233,30 @@ class TRNA():
                 new_seq.append(unmod_base)
             return(''.join(new_seq).replace('U', 'T'))
 
-        #log.info("Downloading modomics database...")
-        print("Downloading modomics database...")
+        log.info("Downloading modomics database...")
+        # print("Downloading modomics database...")
         # Get full Modomics modified tRNA data from web
         if not local_mod:
             try:
                 response = requests.get("http://www.genesilico.pl/modomics/api/sequences?&RNAtype=tRNA")
                 response.raise_for_status()
                 modomics_json = response.json()
-                #log.info("Modomics retrieved...")
-                print("Modomics retrieved...")
+                log.info("Modomics retrieved...")
+                # print("Modomics retrieved...")
             except Exception as http_err:
-                #log.error("Failed to download Modomics database! Error: {}. Check status of Modomics webpage. Using local Modomics files...".format(http_err))
-                print("Failed to download Modomics database! Error: {}. Check status of Modomics webpage. Using local Modomics files...".format(http_err))
+                log.error("Failed to download Modomics database! Error: {}. Check status of Modomics webpage. Using local Modomics files...".format(http_err))
+                # print("Failed to download Modomics database! Error: {}. Check status of Modomics webpage. Using local Modomics files...".format(http_err))
                 modomics_path = repo_path + '/data/modomics.json'
                 with open(modomics_path, encoding="utf-8") as mod_fh:
                     modomics_json = json.load(mod_fh)
             except Exception as err:
                 modomics_path = repo_path + '/data/modomics.json'
-                #log.error("Error in loading local Modomics files: {}".format(err))
-                print("Error in loading local Modomics files: {}".format(err))
+                log.error("Error in loading local Modomics files: {}".format(err))
+                # print("Error in loading local Modomics files: {}".format(err))
                 raise Exception('Failed to open and read local Modomics JSON file: {}'.format(modomics_path))
         else:
-            #log.warning("Retrieval of Modomics database disabled. Using local files instead...")
-            print("Retrieval of Modomics database disabled. Using local files instead...")
+            log.warning("Retrieval of Modomics database disabled. Using local files instead...")
+            # print("Retrieval of Modomics database disabled. Using local files instead...")
             modomics_path = repo_path + '/data/modomics.json'
             with open(modomics_path, encoding="utf-8") as mod_fh:
                 modomics_json = json.load(mod_fh)
@@ -1282,6 +1296,6 @@ class TRNA():
                 modomics_dict[curr_id] = {'seq':seq, 'type':tRNA_type, 'anticodon':new_anticodon, 'modified_idx':mod_idx, 'unmod_seq':unmod_seq, 'insosine_idx':insosine_idx}
 
         for s in self.species_set:
-            #log.info('Number of Modomics entries for {}: {}'.format(s, species_count[s]))
-            print('Number of Modomics entries for {}: {}'.format(s, species_count[s]))
+            log.info('Number of Modomics entries for {}: {}'.format(s, species_count[s]))
+            # print('Number of Modomics entries for {}: {}'.format(s, species_count[s]))
         return(modomics_dict)
