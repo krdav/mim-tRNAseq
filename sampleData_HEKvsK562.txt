@@ -1,4 +1,4 @@
-./mimseq_hek_1.fastq.gz	HEK293T
-./mimseq_hek_2.fastq.gz	HEK293T
-./mimseq_k562_1.fastq.gz	K562
-./mimseq_k562_2.fastq.gz	K562
+./mimseq_hek_1_sm.fastq.gz	HEK293T
+./mimseq_hek_2_sm.fastq.gz	HEK293T
+./mimseq_k562_1_sm.fastq.gz	K562
+./mimseq_k562_2_sm.fastq.gz	K562
