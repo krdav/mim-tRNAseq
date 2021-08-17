@@ -15,6 +15,7 @@ usearch needs to be acquired and installed. Please do the following:
 ::
 	wget https://drive5.com/downloads/usearch10.0.240_i86linux32.gz
 	gunzip usearch10.0.240_i86linux32.gz
+	chmod +x usearch10.0.240_i86linux32
 	mv usearch10.0.240_i86linux32 usearch
 	cp usearch /usr/local/bin
 
@@ -160,7 +161,7 @@ Usage
 An example command to run mim-tRNAseq may look as follows. This will run an analysis between HEK293T and K562 cells on an example dataset included in the package:
 ::
 
-	mimseq --species Hsap --cluster --cluster-id 0.95 --snp-tolerance --cca-analysis --threads 15 --min-cov 2000 --max-mismatches 0.1 --control-condition HEK293T -n hg19_test --out-dir hg19_HEK239vsK562 --max-multi 4 --remap --remap-mismatches 0.075 sampleData_HEKvsK562.txt
+	mimseq --species Hsap38 --cluster-id 0.95 --threads 15 --min-cov 2000 --max-mismatches 0.1 --control-condition HEK293T -n hg38_test --out-dir hg38_HEK239vsK562 --max-multi 4 --remap --remap-mismatches 0.075 sampleData_HEKvsK562.txt
 
 The run should take around 15 minutes on a server using 15 processors (`--threads 15`: please adjust according to your server capabilities).
 

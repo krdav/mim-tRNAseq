@@ -2,7 +2,7 @@
 
 ###########################################################################
 # Analysis of modifications/misincorporations and stops per tRNA position #
-#    also includes counting of CCA vs CC ends required for CCA analysis   #
+#	also includes counting of CCA vs CC ends required for CCA analysis   #
 ###########################################################################
 
 from __future__ import absolute_import
@@ -26,17 +26,17 @@ log = logging.getLogger(__name__)
 
 # custom classes to allow non-demonic processes allowing children processes to spawn more children sub-processes (i.e. multiprocessing within multiprocessing)
 class NoDaemonProcess(multiprocessing.Process):
-    # make 'daemon' attribute always return False
-    def _get_daemon(self):
-        return False
-    def _set_daemon(self, value):
-        pass
-    daemon = property(_get_daemon, _set_daemon)
+	# make 'daemon' attribute always return False
+	def _get_daemon(self):
+		return False
+	def _set_daemon(self, value):
+		pass
+	daemon = property(_get_daemon, _set_daemon)
 
 # We sub-class multiprocessing.pool.Pool instead of multiprocessing.Pool
 # because the latter is only a wrapper function, not a proper class.
 class MyPool(multiprocessing.pool.Pool):
-    Process = NoDaemonProcess
+	Process = NoDaemonProcess
 
 def unknownMods(inputs, knownTable, cluster_dict, modTable, misinc_thresh, cov_table, min_cov, tRNA_dict, remap):
 # find unknown modifications with a total misincorporation threshold >= misinc_thresh
@@ -65,6 +65,7 @@ def unknownMods(inputs, knownTable, cluster_dict, modTable, misinc_thresh, cov_t
 				if pos not in predRound1[cluster]:
 					knownTable_new[cluster].append(pos)
 		knownTable = knownTable_new
+		knownTable = defaultdict(list, knownTable_new)
 	except:
 		next
 
